@@ -1,0 +1,9 @@
+[package]
+name = "agenty"
+version = "0.1.0"
+edition = "2024"
+description = "Agent building utilities"
+license = "GPL-2.0-only"
+readme = "Readme.md"
+
+[dependencies]
