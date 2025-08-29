@@ -80,15 +80,17 @@ impl Agent {
         RF: AsyncFnOnce(&mut Self, String) -> Result<AgentAction<T>, AgentyError>,
     {
         let settings = settings.unwrap_or_else(|| llm.default_settings.clone());
-        let req = CreateChatCompletionRequestArgs::default()
-            .tools(self.tools.openai_objects())
-            .messages(self.full_context())
+        let mut req = CreateChatCompletionRequestArgs::default();
+        req.messages(self.full_context())
             .model(llm.model.to_string())
             .temperature(settings.llm_temperature)
             .presence_penalty(settings.llm_presence_penalty)
-            .max_completion_tokens(settings.llm_max_completion_tokens)
-            .tool_choice(settings.llm_tool_choice)
-            .build()?;
+            .max_completion_tokens(settings.llm_max_completion_tokens);
+        if self.tools.tools.len() > 0 {
+            req.tools(self.tools.openai_objects())
+                .tool_choice(settings.llm_tool_choice);
+        }
+        let req = req.build()?;
         let timeout = Duration::from_secs(settings.llm_prompt_timeout);
 
         let mut resp: CreateChatCompletionResponse = llm
