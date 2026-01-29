@@ -4,7 +4,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 use dyn_clone::DynClone;
 use log::debug;
-use openai_models::openai::types::{ChatCompletionTool, ChatCompletionToolType, FunctionObject};
+use openai_models::openai::types::chat::{ChatCompletionTool, ChatCompletionTools, FunctionObject};
 use schemars::schema_for;
 use serde::de::DeserializeOwned;
 
@@ -35,7 +35,6 @@ pub trait Tool: Send + Sync + DynClone + Debug {
 
     fn to_openai_obejct(&self) -> ChatCompletionTool {
         ChatCompletionTool {
-            r#type: ChatCompletionToolType::Function,
             function: FunctionObject {
                 name: Self::NAME.to_string(),
                 description: Self::DESCRIPTION.map(|e| e.to_string()),
@@ -91,8 +90,11 @@ impl ToolBox {
         Self::default()
     }
 
-    pub fn openai_objects(&self) -> Vec<ChatCompletionTool> {
-        self.tools.iter().map(|t| t.1.to_openai_obejct()).collect()
+    pub fn openai_objects(&self) -> Vec<ChatCompletionTools> {
+        self.tools
+            .iter()
+            .map(|t| ChatCompletionTools::Function(t.1.to_openai_obejct()))
+            .collect()
     }
 
     pub fn add_tool<T: Tool + 'static>(&mut self, tool: T) {

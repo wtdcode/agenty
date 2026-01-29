@@ -6,7 +6,6 @@ use std::{
 use color_eyre::eyre::{OptionExt, eyre};
 use hxd::AsHexd;
 use itertools::Itertools;
-use log::info;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;

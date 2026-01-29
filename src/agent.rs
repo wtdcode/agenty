@@ -7,12 +7,17 @@ use crate::{
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use log::{debug, warn};
-use openai_models::llm::{LLM, LLMSettings};
-use openai_models::openai::types::{
+use openai_models::openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
     CreateChatCompletionResponse, FinishReason,
+};
+use openai_models::{
+    llm::{LLM, LLMSettings},
+    openai::types::chat::{
+        ChatCompletionMessageToolCalls, ChatCompletionToolChoiceOption, FunctionCall,
+    },
 };
 
 pub struct Agent {
@@ -87,8 +92,10 @@ impl Agent {
             .presence_penalty(settings.llm_presence_penalty)
             .max_completion_tokens(settings.llm_max_completion_tokens);
         if self.tools.tools.len() > 0 {
-            req.tools(self.tools.openai_objects())
-                .tool_choice(settings.llm_tool_choice);
+            req.tools(self.tools.openai_objects());
+        }
+        if let Some(choice) = settings.llm_tool_choice.as_ref() {
+            req.tool_choice(choice.clone());
         }
         let req = req.build()?;
         let timeout = Duration::from_secs(settings.llm_prompt_timeout);
@@ -112,7 +119,32 @@ impl Agent {
                     .tool_calls(choice.message.tool_calls.clone().unwrap_or_default())
                     .build()?,
             ));
-            on_toolcalls(self, choice.message.tool_calls.unwrap_or_default()).await
+            on_toolcalls(
+                self,
+                choice
+                    .message
+                    .tool_calls
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|v| match v {
+                        ChatCompletionMessageToolCalls::Custom(v) => {
+                            log::warn!(
+                                "Unexpected custom toolcall {:?}, covert to to function",
+                                &v
+                            );
+                            ChatCompletionMessageToolCall {
+                                id: v.id,
+                                function: FunctionCall {
+                                    name: v.custom_tool.name,
+                                    arguments: v.custom_tool.input,
+                                },
+                            }
+                        }
+                        ChatCompletionMessageToolCalls::Function(v) => v,
+                    })
+                    .collect(),
+            )
+            .await
         } else if matches!(choice.finish_reason, Some(FinishReason::ContentFilter))
             || choice.message.refusal.is_some()
         {
