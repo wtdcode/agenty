@@ -248,3 +248,57 @@ impl Tool for FindFileTool {
         }
     }
 }
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WriteFileArgs {
+    pub file_path: PathBuf,
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WriteFileTool {
+    pub cwd: PathBuf,
+}
+
+impl WriteFileTool {
+    pub fn new(cwd: PathBuf) -> Self {
+        Self { cwd }
+    }
+
+    pub async fn write_file(&self, file_path: PathBuf, content: String) -> Result<String, AgentyError> {
+        let target_path = match sanitize_join_relative_path(&self.cwd, &file_path) {
+            Ok(p) => p,
+            Err(e) => return Ok(e),
+        };
+
+        if let Ok(meta) = tokio::fs::metadata(&target_path).await {
+            if meta.is_dir() {
+                return Ok(format!("Path {:?} is a directory, cannot write to it", &file_path));
+            }
+        }
+
+        if let Some(parent) = target_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        tokio::fs::write(&target_path, content).await?;
+
+        Ok(format!("Successfully wrote to file {:?}", &file_path))
+    }
+}
+
+impl Tool for WriteFileTool {
+    type ARGUMENTS = WriteFileArgs;
+    const NAME: &str = "write_file";
+    const DESCRIPTION: Option<&str> = Some(
+        "Write content to the file at the given path. The file will be created if it doesn't exist, or overwritten if it does. Parent directories will be created automatically. The path should be always relative path and '.' is allowed while '..' is not allowed.",
+    );
+
+    fn invoke(
+        &self,
+        arguments: Self::ARGUMENTS,
+    ) -> impl Future<Output = Result<String, AgentyError>> + Send {
+        self.write_file(arguments.file_path, arguments.content)
+    }
+}
+

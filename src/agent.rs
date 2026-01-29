@@ -12,6 +12,7 @@ use openai_models::openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
     CreateChatCompletionResponse, FinishReason,
+    ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
 };
 use openai_models::{
     llm::{LLM, LLMSettings},
@@ -81,8 +82,8 @@ impl Agent {
             &mut Self,
             Vec<ChatCompletionMessageToolCall>,
         ) -> Result<AgentAction<T>, AgentyError>,
-        MS: AsyncFnOnce(&mut Self, String) -> Result<AgentAction<T>, AgentyError>,
-        RF: AsyncFnOnce(&mut Self, String) -> Result<AgentAction<T>, AgentyError>,
+        MS: AsyncFnOnce(&mut Self, String, FinishReason) -> Result<AgentAction<T>, AgentyError>,
+        RF: AsyncFnOnce(&mut Self, String, FinishReason) -> Result<AgentAction<T>, AgentyError>,
     {
         let settings = settings.unwrap_or_else(|| llm.default_settings.clone());
         let mut req = CreateChatCompletionRequestArgs::default();
@@ -153,7 +154,8 @@ impl Agent {
                     .refusal(choice.message.refusal.clone().unwrap_or_default())
                     .build()?,
             ));
-            on_refusal(self, choice.message.refusal.unwrap_or_default()).await
+            let finish_reason = choice.finish_reason.unwrap_or(FinishReason::ContentFilter);
+            on_refusal(self, choice.message.refusal.unwrap_or_default(), finish_reason).await
         } else if matches!(choice.finish_reason, Some(FinishReason::Stop))
             || matches!(choice.finish_reason, Some(FinishReason::Length))
             || choice.message.content.is_some()
@@ -163,7 +165,8 @@ impl Agent {
                     .content(choice.message.content.clone().unwrap_or_default())
                     .build()?,
             ));
-            on_message(self, choice.message.content.unwrap_or_default()).await
+            let finish_reason = choice.finish_reason.unwrap_or(FinishReason::Stop);
+            on_message(self, choice.message.content.unwrap_or_default(), finish_reason).await
         } else {
             Err(AgentyError::Other(eyre!(
                 "Not supported choice: {:?}",
@@ -172,10 +175,10 @@ impl Agent {
         }
     }
 
-    async fn handle_toolcalls(
+    pub async fn handle_toolcalls(
         &mut self,
         toolcalls: Vec<ChatCompletionMessageToolCall>,
-    ) -> Result<Vec<String>, AgentyError> {
+    ) -> Result<Vec<(String, String, String)>, AgentyError> {
         let mut resps = vec![];
         for call in toolcalls {
             match self
@@ -187,7 +190,7 @@ impl Agent {
                     warn!("No such tool: {}, will try again", &call.function.name);
                     return Err(AgentyError::NoSuchTool(call.function.name));
                 }
-                Some(Ok(v)) => resps.push(v),
+                Some(Ok(v)) => resps.push((call.id.clone(), call.function.name.clone(), v)),
                 Some(Err(e)) => return Err(e),
             }
         }
@@ -202,6 +205,18 @@ impl Agent {
         Ok(())
     }
 
+    pub fn append_tool_results(&mut self, tool_results: Vec<(String, String, String)>) {
+        for (tool_call_id, tool_name, result) in tool_results {
+            let tool_msg = ChatCompletionRequestToolMessage {
+                content: ChatCompletionRequestToolMessageContent::Text(result),
+                tool_call_id: tool_call_id.clone(),
+            };
+            self.context.push(ChatCompletionRequestMessage::Tool(tool_msg));
+            debug!("Added tool result for {}: {}", tool_name, tool_call_id);
+        }
+    }
+
+    
     pub fn append_context(&mut self, ctx: ChatCompletionRequestMessage) {
         self.context.push(ctx);
     }
@@ -227,7 +242,7 @@ impl Agent {
                             let td: T::ARGUMENTS = serde_json::from_str(&call.function.arguments)?;
                             Ok(AgentAction::Out(td))
                         } else {
-                            let resps = match ctx.handle_toolcalls(toolcalls).await {
+                            let tool_results = match ctx.handle_toolcalls(toolcalls).await {
                                 Ok(v) => v,
                                 Err(e) => match &e {
                                     AgentyError::NoSuchTool(_)
@@ -238,12 +253,16 @@ impl Agent {
                                     _ => return Err(e),
                                 },
                             };
-                            ctx.append_user(resps.into_iter().join("\n"))?;
+                            // Use correct tool response format
+                            ctx.append_tool_results(
+                                tool_results.into_iter()
+                                    .collect()
+                            );
                             Ok(AgentAction::Continue)
                         }
                     },
-                    async |_, msg| Ok(AgentAction::Unexpected(msg)),
-                    async |_, msg| Ok(AgentAction::Unexpected(msg)),
+                    async |_, msg, _| Ok(AgentAction::Unexpected(msg)),
+                    async |_, msg, _| Ok(AgentAction::Unexpected(msg)),
                 )
                 .await?;
 
@@ -268,7 +287,7 @@ impl Agent {
                     prefix,
                     settings.clone(),
                     async |ctx, toolcalls| {
-                        let resps = match ctx.handle_toolcalls(toolcalls).await {
+                        let tool_results = match ctx.handle_toolcalls(toolcalls).await {
                             Ok(v) => v,
                             Err(e) => match &e {
                                 AgentyError::NoSuchTool(_)
@@ -279,11 +298,12 @@ impl Agent {
                                 _ => return Err(e),
                             },
                         };
-                        ctx.append_user(resps.into_iter().join("\n"))?;
+                        // Use correct tool response format
+                        ctx.append_tool_results(tool_results);
                         Ok(AgentAction::Continue)
                     },
-                    async |_, msg| Ok(AgentAction::Out(msg)),
-                    async |_, msg| Ok(AgentAction::Unexpected(msg)),
+                    async |_, msg, _| Ok(AgentAction::Out(msg)),
+                    async |_, msg, _| Ok(AgentAction::Unexpected(msg)),
                 )
                 .await?;
             debug!("Agent action: {:?}", &action);
