@@ -115,17 +115,37 @@ impl Agent {
                 .map(|t| !t.is_empty())
                 .unwrap_or_default()
         {
-            self.context.push(ChatCompletionRequestMessage::Assistant(
-                ChatCompletionRequestAssistantMessageArgs::default()
-                    .tool_calls(choice.message.tool_calls.clone().unwrap_or_default())
-                    .build()?,
-            ));
+            let assistant_content = choice.message.content.clone();
+            let tool_calls = choice.message.tool_calls.clone().unwrap_or_default();
+
+            if let Some(content) = &assistant_content {
+                self.context.push(ChatCompletionRequestMessage::Assistant(
+                    ChatCompletionRequestAssistantMessageArgs::default()
+                        .content(content.clone())
+                        .tool_calls(tool_calls.clone())
+                        .build()?,
+                ));
+            } else {
+                self.context.push(ChatCompletionRequestMessage::Assistant(
+                    ChatCompletionRequestAssistantMessageArgs::default()
+                        .tool_calls(tool_calls.clone())
+                        .build()?,
+                ));
+            }
+
+            if let Some(content) = assistant_content {
+                if !content.trim().is_empty() {
+                    let finish_reason = choice.finish_reason.unwrap_or(FinishReason::ToolCalls);
+                    let action = on_message(self, content, finish_reason).await?;
+                    if !matches!(action, AgentAction::Continue) {
+                        return Ok(action);
+                    }
+                }
+            }
+
             on_toolcalls(
                 self,
-                choice
-                    .message
-                    .tool_calls
-                    .unwrap_or_default()
+                tool_calls
                     .into_iter()
                     .map(|v| match v {
                         ChatCompletionMessageToolCalls::Custom(v) => {
